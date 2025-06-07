@@ -1,0 +1,93 @@
+# =================================================================
+# DOLIBARR DOCKER - FICHIERS À IGNORER
+# =================================================================
+
+# Fichiers de configuration sensibles
+.env
+.env.local
+.env.production
+*.env
+
+# Données persistantes
+data/
+dolibarr_documents/
+dolibarr_custom/
+dolibarr_mariadb/
+
+# Logs
+logs/
+*.log
+
+# Scripts personnalisés
+scripts/docker-init.d/
+scripts/before-starting.d/
+
+# Configuration Apache personnalisée
+apache-config/
+
+# Certificats SSL
+*.crt
+*.key
+*.pem
+ssl/
+
+# Sauvegardes
+backup_*.tar.gz
+backup_*.sql
+backups/
+
+# Fichiers temporaires
+.tmp/
+tmp/
+*.tmp
+
+# Fichiers macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Fichiers Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Fichiers Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# Fichiers d'éditeurs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node modules (si vous ajoutez des outils JS)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Fichiers Docker
+.dockerignore
+
+# Fichiers de monitoring
+prometheus.yml
+grafana/
+
+# Fichiers de test
+test-data/
+*.test
