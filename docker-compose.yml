@@ -1,0 +1,79 @@
+services:
+  dolibarr:
+    image: dolibarr/dolibarr:latest
+    container_name: dolibarr_web
+    restart: unless-stopped
+    
+    environment:
+      # Installation & Production
+      DOLI_INSTALL_AUTO: ${DOLI_INSTALL_AUTO:-1}
+      DOLI_INIT_DEMO: ${DOLI_INIT_DEMO:-0}
+      DOLI_PROD: ${DOLI_PROD:-1}
+      DOLI_INSTANCE_UNIQUE_ID: ${DOLI_INSTANCE_UNIQUE_ID}
+      
+      # Database Configuration (PostgreSQL)
+      DOLI_DB_TYPE: ${DOLI_DB_TYPE:-pgsql}
+      DOLI_DB_HOST: ${DOLI_DB_HOST}
+      DOLI_DB_HOST_PORT: ${DOLI_DB_HOST_PORT:-5432}
+      DOLI_DB_NAME: ${DOLI_DB_NAME}
+      DOLI_DB_USER: ${DOLI_DB_USER}
+      DOLI_DB_PASSWORD: ${DOLI_DB_PASSWORD}
+      
+      # Application Configuration
+      DOLI_URL_ROOT: ${DOLI_URL_ROOT}
+      DOLI_ADMIN_LOGIN: ${DOLI_ADMIN_LOGIN}
+      DOLI_ADMIN_PASSWORD: ${DOLI_ADMIN_PASSWORD}
+      
+      # Company Configuration
+      DOLI_COMPANY_NAME: ${DOLI_COMPANY_NAME}
+      DOLI_COMPANY_COUNTRYCODE: ${DOLI_COMPANY_COUNTRYCODE}
+      DOLI_ENABLE_MODULES: ${DOLI_ENABLE_MODULES}
+      
+      # Cron Configuration
+      DOLI_CRON: ${DOLI_CRON:-1}
+      DOLI_CRON_KEY: ${DOLI_CRON_KEY}
+      DOLI_CRON_USER: ${DOLI_CRON_USER}
+      
+      # System Configuration
+      WWW_USER_ID: ${WWW_USER_ID:-1000}
+      WWW_GROUP_ID: ${WWW_GROUP_ID:-1000}
+      
+      # PHP Configuration
+      PHP_INI_DATE_TIMEZONE: ${PHP_INI_DATE_TIMEZONE:-Europe/Paris}
+      PHP_INI_MEMORY_LIMIT: ${PHP_INI_MEMORY_LIMIT:-512M}
+      PHP_INI_UPLOAD_MAX_FILESIZE: ${PHP_INI_UPLOAD_MAX_FILESIZE:-50M}
+      PHP_INI_POST_MAX_SIZE: ${PHP_INI_POST_MAX_SIZE:-100M}
+      PHP_INI_ALLOW_URL_FOPEN: ${PHP_INI_ALLOW_URL_FOPEN:-0}
+    
+    ports:
+      - "${DOLIBARR_PORT:-8080}:80"
+    
+    volumes:
+      # Persistent data volumes
+      - ${DOLIBARR_DOCUMENTS_PATH:-./dolibarr_documents}:/var/www/documents
+      - ${DOLIBARR_CUSTOM_PATH:-./dolibarr_custom}:/var/www/html/custom
+      
+      # Optional: Custom scripts
+      # - ./scripts/docker-init.d:/var/www/scripts/docker-init.d:ro
+      # - ./scripts/before-starting.d:/var/www/scripts/before-starting.d:ro
+      
+      # Optional: Apache configuration
+      # - ./apache-config/servername.conf:/etc/apache2/conf-enabled/servername.conf:ro
+      # - ./apache-config/remoteip.load:/etc/apache2/mods-enabled/remoteip.load:ro
+      # - ./apache-config/remoteip.conf:/etc/apache2/mods-enabled/remoteip.conf:ro
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    labels:
+      - "traefik.enable=true" # Si vous utilisez Traefik
+      - "traefik.http.routers.dolibarr.rule=Host(`${DOMAIN_NAME:-dolibarr.localhost}`)"
+      - "traefik.http.services.dolibarr.loadbalancer.server.port=80"
+
+networks:
+  default:
+    name: dolibarr_network
