@@ -1,0 +1,399 @@
+# =================================================================
+# PROMTAIL CONFIGURATION - COLLECTEUR DE LOGS
+# =================================================================
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+# =================================================================
+# CLIENT CONFIGURATION
+# =================================================================
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    timeout: 10s
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+    # Authentication (si nécessaire)
+    # basic_auth:
+    #   username: user
+    #   password: pass
+
+# =================================================================
+# POSITIONS (ÉTAT DES FICHIERS LUES)
+# =================================================================
+positions:
+  filename: /tmp/positions.yaml
+
+# =================================================================
+# TARGETS CONFIGURATION
+# =================================================================
+target_config:
+  sync_period: 10s
+
+# =================================================================
+# SCRAPE CONFIGURATIONS
+# =================================================================
+scrape_configs:
+  # =================================================================
+  # LOGS SYSTÈME
+  # =================================================================
+  - job_name: system-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: system
+          environment: production
+          __path__: /var/log/{syslog,kern.log,auth.log}
+    
+    pipeline_stages:
+      # Parse du timestamp système
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+      
+      # Extraction des niveaux de log
+      - regex:
+          expression: '(?P<level>INFO|WARN|ERROR|DEBUG|FATAL)'
+      
+      # Labels dynamiques
+      - labels:
+          level:
+
+  # =================================================================
+  # LOGS DOCKER CONTAINERS
+  # =================================================================
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["logging=promtail"]
+    
+    relabel_configs:
+      # Nom du conteneur
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: container_name
+      
+      # Image du conteneur
+      - source_labels: ['__meta_docker_container_image']
+        target_label: image
+      
+      # Labels personnalisés
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: service
+      
+      # Chemin des logs
+      - source_labels: ['__meta_docker_container_id']
+        target_label: __path__
+        replacement: '/var/lib/docker/containers/$1/*-json.log'
+    
+    pipeline_stages:
+      # Parse JSON Docker
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            timestamp: time
+      
+      # Timestamp
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+      
+      # Output
+      - output:
+          source: output
+
+  # =================================================================
+  # LOGS TRAEFIK
+  # =================================================================
+  - job_name: traefik-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: traefik
+          service: reverse-proxy
+          environment: production
+          __path__: /var/log/traefik/*.log
+    
+    pipeline_stages:
+      # Parse des logs d'accès Traefik
+      - regex:
+          expression: '^(?P<remote_addr>\S+) - (?P<remote_user>\S+) \[(?P<time>[^\]]+)\] "(?P<method>\S+) (?P<request>\S+) (?P<protocol>\S+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)" (?P<request_time>\d+)'
+      
+      # Timestamp
+      - timestamp:
+          source: time
+          format: '02/Jan/2006:15:04:05 -0700'
+      
+      # Labels pour filtrage
+      - labels:
+          method:
+          status:
+          service:
+      
+      # Métriques
+      - metrics:
+          traefik_requests_total:
+            type: Counter
+            description: "Total des requêtes Traefik"
+            source: status
+            config:
+              action: inc
+          traefik_request_duration:
+            type: Histogram
+            description: "Durée des requêtes Traefik"
+            source: request_time
+            config:
+              buckets: [0.1, 0.5, 1, 2, 5, 10]
+
+  # =================================================================
+  # LOGS N8N
+  # =================================================================
+  - job_name: n8n-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: n8n
+          service: automation
+          environment: production
+          __path__: /var/log/n8n/*.log
+    
+    pipeline_stages:
+      # Parse JSON des logs n8n
+      - json:
+          expressions:
+            level: level
+            msg: message
+            timestamp: time
+            workflow: workflowName
+            execution: executionId
+      
+      # Timestamp
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+      
+      # Labels
+      - labels:
+          level:
+          workflow:
+      
+      # Filtrer les logs de debug si nécessaire
+      - match:
+          selector: '{level="debug"}'
+          action: drop
+
+  # =================================================================
+  # LOGS DOLIBARR
+  # =================================================================
+  - job_name: dolibarr-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: dolibarr
+          service: erp-crm
+          environment: production
+          __path__: /var/log/dolibarr/*.log
+    
+    pipeline_stages:
+      # Parse des logs PHP/Apache
+      - regex:
+          expression: '^\[(?P<timestamp>[^\]]+)\] (?P<level>\w+): (?P<message>.*)'
+      
+      # Timestamp
+      - timestamp:
+          source: timestamp
+          format: '02-Jan-2006 15:04:05'
+      
+      # Labels
+      - labels:
+          level:
+
+  # =================================================================
+  # LOGS NGINX/APACHE (si présents)
+  # =================================================================
+  - job_name: webserver-access
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: webserver
+          log_type: access
+          __path__: /var/log/{nginx,apache2}/*access*.log
+    
+    pipeline_stages:
+      # Parse format de log commun
+      - regex:
+          expression: '^(?P<remote_addr>\S+) \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<method>\S+) (?P<request>\S+) (?P<protocol>\S+)" (?P<status>\d+) (?P<bytes_sent>\d+)'
+      
+      # Timestamp
+      - timestamp:
+          source: time
+          format: '02/Jan/2006:15:04:05 -0700'
+      
+      # Labels
+      - labels:
+          method:
+          status:
+
+  - job_name: webserver-error
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: webserver
+          log_type: error
+          __path__: /var/log/{nginx,apache2}/*error*.log
+    
+    pipeline_stages:
+      # Parse des erreurs
+      - regex:
+          expression: '^(?P<timestamp>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] (?P<message>.*)'
+      
+      # Timestamp
+      - timestamp:
+          source: timestamp
+          format: '2006/01/02 15:04:05'
+      
+      # Labels
+      - labels:
+          level:
+
+  # =================================================================
+  # LOGS REDIS
+  # =================================================================
+  - job_name: redis-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: redis
+          service: cache
+          __path__: /var/log/redis/*.log
+    
+    pipeline_stages:
+      # Parse des logs Redis
+      - regex:
+          expression: '^(?P<pid>\d+):(?P<role>\w+) (?P<timestamp>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2}\.\d{3}) (?P<level>\w+) (?P<message>.*)'
+      
+      # Timestamp
+      - timestamp:
+          source: timestamp
+          format: '02 Jan 2006 15:04:05.000'
+      
+      # Labels
+      - labels:
+          level:
+          role:
+
+  # =================================================================
+  # LOGS POSTGRESQL (si local)
+  # =================================================================
+  - job_name: postgresql-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: postgresql
+          service: database
+          __path__: /var/log/postgresql/*.log
+    
+    pipeline_stages:
+      # Parse des logs PostgreSQL
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \w+) \[(?P<pid>\d+)\] (?P<level>\w+): (?P<message>.*)'
+      
+      # Timestamp
+      - timestamp:
+          source: timestamp
+          format: '2006-01-02 15:04:05.000 MST'
+      
+      # Labels
+      - labels:
+          level:
+
+  # =================================================================
+  # LOGS FAIL2BAN
+  # =================================================================
+  - job_name: fail2ban-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: fail2ban
+          service: security
+          __path__: /var/log/fail2ban.log
+    
+    pipeline_stages:
+      # Parse Fail2Ban
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) fail2ban\.(?P<component>\w+)\s+\[(?P<pid>\d+)\]: (?P<level>\w+)\s+(?P<message>.*)'
+      
+      # Timestamp
+      - timestamp:
+          source: timestamp
+          format: '2006-01-02 15:04:05,000'
+      
+      # Labels
+      - labels:
+          level:
+          component:
+      
+      # Métriques de sécurité
+      - match:
+          selector: '{job="fail2ban"}'
+          stages:
+            - regex:
+                expression: 'Ban (?P<ip>\d+\.\d+\.\d+\.\d+)'
+            - labels:
+                banned_ip:
+            - metrics:
+                fail2ban_bans_total:
+                  type: Counter
+                  description: "Total des bannissements Fail2Ban"
+                  config:
+                    action: inc
+
+  # =================================================================
+  # LOGS SYSLOG GLOBAUX
+  # =================================================================
+  - job_name: syslog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          __path__: /var/log/syslog
+    
+    pipeline_stages:
+      # Parse syslog standard
+      - regex:
+          expression: '^(?P<timestamp>\w{3} \d{1,2} \d{2}:\d{2}:\d{2}) (?P<hostname>\S+) (?P<program>[^:\[\]]+)(?:\[(?P<pid>\d+)\])?: (?P<message>.*)'
+      
+      # Timestamp (attention: pas d'année dans syslog)
+      - timestamp:
+          source: timestamp
+          format: 'Jan 2 15:04:05'
+      
+      # Labels
+      - labels:
+          program:
+          hostname:
+
+# =================================================================
+# LIMITS
+# =================================================================
+limits_config:
+  readline_rate: 10000
+  readline_burst: 20000

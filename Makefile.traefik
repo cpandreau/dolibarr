@@ -1,0 +1,309 @@
+# =================================================================
+# TRAEFIK + DOLIBARR - MAKEFILE
+# =================================================================
+
+.PHONY: help setup start stop restart logs status health backup restore update clean ssl-check security-check
+
+# Variables
+COMPOSE_FILE = docker-compose.integrated.yml
+PROJECT_NAME = traefik-dolibarr
+BACKUP_DIR = backups
+DATE = $(shell date +%Y%m%d_%H%M%S)
+
+# Couleurs pour l'affichage
+GREEN = \033[32m
+YELLOW = \033[33m
+RED = \033[31m
+BLUE = \033[34m
+NC = \033[0m
+
+# Aide
+help: ## 📋 Affiche cette aide
+	@echo "$(BLUE)=================================================================$(NC)"
+	@echo "$(BLUE)  TRAEFIK + DOLIBARR - COMMANDES DISPONIBLES$(NC)"
+	@echo "$(BLUE)=================================================================$(NC)"
+	@echo ""
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  $(GREEN)%-20s$(NC) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo ""
+	@echo "$(YELLOW)Usage: make <commande>$(NC)"
+	@echo ""
+
+# =================================================================
+# INSTALLATION ET CONFIGURATION
+# =================================================================
+
+setup: ## 🚀 Installation complète interactive
+	@echo "$(BLUE)🚀 Installation de Traefik + Dolibarr...$(NC)"
+	@chmod +x setup-traefik.sh
+	@./setup-traefik.sh
+
+init-network: ## 🌐 Crée le réseau Docker Traefik
+	@echo "$(BLUE)🌐 Création du réseau traefik-network...$(NC)"
+	@docker network inspect traefik-network >/dev/null 2>&1 || docker network create traefik-network
+	@echo "$(GREEN)✅ Réseau créé$(NC)"
+
+generate-env: ## 🔧 Génère un fichier .env d'exemple
+	@echo "$(BLUE)🔧 Génération du fichier .env...$(NC)"
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)⚠️  Le fichier .env existe déjà, sauvegardé en .env.backup$(NC)"; \
+		cp .env .env.backup; \
+	fi
+	@cp .env.integrated .env
+	@echo "$(GREEN)✅ Fichier .env créé, personnalisez-le avant de démarrer$(NC)"
+
+# =================================================================
+# GESTION DES SERVICES
+# =================================================================
+
+start: init-network ## ▶️ Démarre tous les services
+	@echo "$(BLUE)▶️  Démarrage de l'infrastructure...$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) up -d
+	@echo "$(GREEN)✅ Services démarrés$(NC)"
+	@make status
+
+stop: ## ⏹️ Arrête tous les services
+	@echo "$(BLUE)⏹️  Arrêt de l'infrastructure...$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) down
+	@echo "$(GREEN)✅ Services arrêtés$(NC)"
+
+restart: ## 🔄 Redémarre tous les services
+	@echo "$(BLUE)🔄 Redémarrage de l'infrastructure...$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) restart
+	@echo "$(GREEN)✅ Services redémarrés$(NC)"
+
+pull: ## 📥 Met à jour les images Docker
+	@echo "$(BLUE)📥 Téléchargement des dernières images...$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) pull
+	@echo "$(GREEN)✅ Images mises à jour$(NC)"
+
+# =================================================================
+# MONITORING ET LOGS
+# =================================================================
+
+status: ## 📊 Affiche le statut des services
+	@echo "$(BLUE)📊 Statut des services :$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) ps
+	@echo ""
+
+logs: ## 📜 Affiche les logs en temps réel
+	@echo "$(BLUE)📜 Logs en temps réel (Ctrl+C pour quitter) :$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) logs -f
+
+logs-traefik: ## 🔍 Logs Traefik uniquement
+	@docker-compose -f $(COMPOSE_FILE) logs -f traefik
+
+logs-dolibarr: ## 🔍 Logs Dolibarr uniquement
+	@docker-compose -f $(COMPOSE_FILE) logs -f dolibarr
+
+logs-access: ## 🌐 Logs d'accès Traefik
+	@tail -f traefik-logs/access.log 2>/dev/null || echo "$(RED)❌ Fichier de logs d'accès non trouvé$(NC)"
+
+logs-errors: ## ⚠️ Filtrage des erreurs dans les logs
+	@echo "$(BLUE)⚠️  Erreurs récentes :$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) logs --tail=100 | grep -i error || echo "$(GREEN)✅ Aucune erreur trouvée$(NC)"
+
+health: ## 🏥 Vérification de santé des services
+	@echo "$(BLUE)🏥 Vérification de santé...$(NC)"
+	@echo ""
+	@echo "$(YELLOW)📊 Statut des conteneurs :$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) ps
+	@echo ""
+	@echo "$(YELLOW)🌐 Tests de connectivité :$(NC)"
+	@if command -v curl >/dev/null 2>&1; then \
+		if [ -f .env ]; then \
+			DOLIBARR_DOMAIN=$$(grep DOLIBARR_DOMAIN .env | cut -d'=' -f2); \
+			TRAEFIK_DOMAIN=$$(grep TRAEFIK_DOMAIN .env | cut -d'=' -f2); \
+			echo "  Dolibarr ($$DOLIBARR_DOMAIN) : $$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://$$DOLIBARR_DOMAIN 2>/dev/null || echo 'TIMEOUT')"; \
+			echo "  Traefik ($$TRAEFIK_DOMAIN) : $$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://$$TRAEFIK_DOMAIN 2>/dev/null || echo 'TIMEOUT')"; \
+		else \
+			echo "$(RED)❌ Fichier .env introuvable$(NC)"; \
+		fi; \
+	else \
+		echo "$(YELLOW)⚠️  curl non installé, impossible de tester les URLs$(NC)"; \
+	fi
+
+# =================================================================
+# SAUVEGARDES ET RESTAURATION
+# =================================================================
+
+backup: ## 💾 Crée une sauvegarde complète
+	@echo "$(BLUE)💾 Création d'une sauvegarde...$(NC)"
+	@mkdir -p $(BACKUP_DIR)
+	@echo "$(YELLOW)📦 Sauvegarde des données...$(NC)"
+	@tar -czf "$(BACKUP_DIR)/backup_$(DATE).tar.gz" \
+		data/ \
+		traefik-data/ \
+		traefik-config/ \
+		.env \
+		$(COMPOSE_FILE) \
+		2>/dev/null || true
+	@echo "$(GREEN)✅ Sauvegarde créée : $(BACKUP_DIR)/backup_$(DATE).tar.gz$(NC)"
+	@ls -lh $(BACKUP_DIR)/backup_$(DATE).tar.gz
+
+backup-quick: ## ⚡ Sauvegarde rapide (données uniquement)
+	@echo "$(BLUE)⚡ Sauvegarde rapide...$(NC)"
+	@mkdir -p $(BACKUP_DIR)
+	@tar -czf "$(BACKUP_DIR)/backup_quick_$(DATE).tar.gz" data/ .env 2>/dev/null || true
+	@echo "$(GREEN)✅ Sauvegarde rapide créée$(NC)"
+
+list-backups: ## 📋 Liste les sauvegardes disponibles
+	@echo "$(BLUE)📋 Sauvegardes disponibles :$(NC)"
+	@ls -lht $(BACKUP_DIR)/ 2>/dev/null || echo "$(YELLOW)⚠️  Aucune sauvegarde trouvée$(NC)"
+
+restore: ## 🔄 Restaure depuis une sauvegarde
+	@echo "$(BLUE)🔄 Restauration depuis une sauvegarde...$(NC)"
+	@if [ -z "$(BACKUP)" ]; then \
+		echo "$(RED)❌ Spécifiez le fichier : make restore BACKUP=backup_file.tar.gz$(NC)"; \
+		echo "$(YELLOW)📋 Sauvegardes disponibles :$(NC)"; \
+		ls $(BACKUP_DIR)/ 2>/dev/null || echo "Aucune sauvegarde"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_DIR)/$(BACKUP)" ]; then \
+		echo "$(RED)❌ Fichier $(BACKUP_DIR)/$(BACKUP) non trouvé$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)⚠️  Arrêt des services...$(NC)"
+	@make stop
+	@echo "$(YELLOW)📦 Extraction de la sauvegarde...$(NC)"
+	@tar -xzf "$(BACKUP_DIR)/$(BACKUP)"
+	@echo "$(YELLOW)▶️  Redémarrage des services...$(NC)"
+	@make start
+	@echo "$(GREEN)✅ Restauration terminée$(NC)"
+
+# =================================================================
+# MISES À JOUR ET MAINTENANCE
+# =================================================================
+
+update: backup ## 🔄 Met à jour l'infrastructure (avec sauvegarde)
+	@echo "$(BLUE)🔄 Mise à jour de l'infrastructure...$(NC)"
+	@echo "$(YELLOW)1. Sauvegarde préventive...$(NC)"
+	@make backup-quick
+	@echo "$(YELLOW)2. Téléchargement des nouvelles images...$(NC)"
+	@make pull
+	@echo "$(YELLOW)3. Redémarrage avec nouvelles images...$(NC)"
+	@make restart
+	@echo "$(YELLOW)4. Vérification...$(NC)"
+	@sleep 10
+	@make health
+	@echo "$(GREEN)✅ Mise à jour terminée$(NC)"
+
+update-dolibarr: ## 🔄 Met à jour Dolibarr uniquement
+	@echo "$(BLUE)🔄 Mise à jour de Dolibarr...$(NC)"
+	@echo "$(YELLOW)⚠️  Suppression du verrou d'installation...$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) exec dolibarr rm -f /var/www/documents/install.lock || true
+	@docker-compose -f $(COMPOSE_FILE) pull dolibarr
+	@docker-compose -f $(COMPOSE_FILE) up -d dolibarr
+	@echo "$(GREEN)✅ Dolibarr mis à jour$(NC)"
+	@echo "$(BLUE)ℹ️  Visitez votre Dolibarr pour finaliser la mise à jour$(NC)"
+
+clean: ## 🧹 Nettoie les ressources Docker
+	@echo "$(BLUE)🧹 Nettoyage des ressources...$(NC)"
+	@docker system prune -f
+	@docker volume prune -f
+	@echo "$(GREEN)✅ Nettoyage terminé$(NC)"
+
+clean-logs: ## 🗑️ Nettoie les logs anciens
+	@echo "$(BLUE)🗑️  Nettoyage des logs...$(NC)"
+	@find traefik-logs/ -name "*.log" -type f -mtime +30 -delete 2>/dev/null || true
+	@find $(BACKUP_DIR)/ -name "backup_*.tar.gz" -type f -mtime +90 -delete 2>/dev/null || true
+	@echo "$(GREEN)✅ Logs nettoyés$(NC)"
+
+# =================================================================
+# SÉCURITÉ ET TESTS
+# =================================================================
+
+ssl-check: ## 🔒 Vérifie les certificats SSL
+	@echo "$(BLUE)🔒 Vérification des certificats SSL...$(NC)"
+	@if [ -f .env ]; then \
+		DOLIBARR_DOMAIN=$$(grep DOLIBARR_DOMAIN .env | cut -d'=' -f2); \
+		TRAEFIK_DOMAIN=$$(grep TRAEFIK_DOMAIN .env | cut -d'=' -f2); \
+		echo "$(YELLOW)📋 Certificats Dolibarr ($$DOLIBARR_DOMAIN) :$(NC)"; \
+		openssl s_client -connect $$DOLIBARR_DOMAIN:443 -servername $$DOLIBARR_DOMAIN </dev/null 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "$(RED)❌ Erreur de certificat$(NC)"; \
+		echo "$(YELLOW)📋 Certificats Traefik ($$TRAEFIK_DOMAIN) :$(NC)"; \
+		openssl s_client -connect $$TRAEFIK_DOMAIN:443 -servername $$TRAEFIK_DOMAIN </dev/null 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || echo "$(RED)❌ Erreur de certificat$(NC)"; \
+	else \
+		echo "$(RED)❌ Fichier .env introuvable$(NC)"; \
+	fi
+
+security-check: ## 🛡️ Audit de sécurité
+	@echo "$(BLUE)🛡️  Audit de sécurité...$(NC)"
+	@echo ""
+	@echo "$(YELLOW)🔍 Vérification des permissions fichiers :$(NC)"
+	@ls -la .env 2>/dev/null | awk '{print "  .env: " $$1}' || echo "$(RED)❌ .env non trouvé$(NC)"
+	@ls -ld traefik-data/letsencrypt/ 2>/dev/null | awk '{print "  letsencrypt/: " $$1}' || echo "$(RED)❌ dossier letsencrypt non trouvé$(NC)"
+	@echo ""
+	@echo "$(YELLOW)🔍 Vérification des conteneurs :$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+	@echo ""
+	@echo "$(YELLOW)🔍 Vérification réseau :$(NC)"
+	@docker network ls | grep traefik-network && echo "$(GREEN)✅ Réseau traefik-network OK$(NC)" || echo "$(RED)❌ Réseau traefik-network manquant$(NC)"
+
+test-connectivity: ## 🌐 Test de connectivité complet
+	@echo "$(BLUE)🌐 Test de connectivité...$(NC)"
+	@if [ -f .env ]; then \
+		DOLIBARR_DOMAIN=$$(grep DOLIBARR_DOMAIN .env | cut -d'=' -f2); \
+		TRAEFIK_DOMAIN=$$(grep TRAEFIK_DOMAIN .env | cut -d'=' -f2); \
+		echo "$(YELLOW)🔍 Test DNS :$(NC)"; \
+		nslookup $$DOLIBARR_DOMAIN >/dev/null 2>&1 && echo "  $$DOLIBARR_DOMAIN: $(GREEN)✅ OK$(NC)" || echo "  $$DOLIBARR_DOMAIN: $(RED)❌ FAIL$(NC)"; \
+		nslookup $$TRAEFIK_DOMAIN >/dev/null 2>&1 && echo "  $$TRAEFIK_DOMAIN: $(GREEN)✅ OK$(NC)" || echo "  $$TRAEFIK_DOMAIN: $(RED)❌ FAIL$(NC)"; \
+		echo "$(YELLOW)🔍 Test HTTP :$(NC)"; \
+		curl -s -o /dev/null -w "  $$DOLIBARR_DOMAIN: %{http_code} (%{time_total}s)\n" --max-time 10 https://$$DOLIBARR_DOMAIN 2>/dev/null || echo "  $$DOLIBARR_DOMAIN: $(RED)❌ TIMEOUT$(NC)"; \
+		curl -s -o /dev/null -w "  $$TRAEFIK_DOMAIN: %{http_code} (%{time_total}s)\n" --max-time 10 https://$$TRAEFIK_DOMAIN 2>/dev/null || echo "  $$TRAEFIK_DOMAIN: $(RED)❌ TIMEOUT$(NC)"; \
+	else \
+		echo "$(RED)❌ Fichier .env introuvable$(NC)"; \
+	fi
+
+# =================================================================
+# UTILITAIRES
+# =================================================================
+
+shell-traefik: ## 🐚 Ouvre un shell dans le conteneur Traefik
+	@docker-compose -f $(COMPOSE_FILE) exec traefik sh
+
+shell-dolibarr: ## 🐚 Ouvre un shell dans le conteneur Dolibarr
+	@docker-compose -f $(COMPOSE_FILE) exec dolibarr bash
+
+config: ## ⚙️ Affiche la configuration active
+	@echo "$(BLUE)⚙️  Configuration Docker Compose :$(NC)"
+	@docker-compose -f $(COMPOSE_FILE) config
+
+env-check: ## 🔍 Vérifie le fichier .env
+	@echo "$(BLUE)🔍 Vérification du fichier .env...$(NC)"
+	@if [ ! -f .env ]; then \
+		echo "$(RED)❌ Fichier .env manquant !$(NC)"; \
+		echo "$(YELLOW)💡 Utilisez: make generate-env$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✅ Fichier .env présent$(NC)"
+	@echo ""
+	@echo "$(YELLOW)📋 Variables principales :$(NC)"
+	@grep -E "^(TRAEFIK_DOMAIN|DOLIBARR_DOMAIN|ACME_EMAIL)" .env | sed 's/=.*/=***/' || echo "$(YELLOW)⚠️  Variables manquantes$(NC)"
+
+stats: ## 📊 Statistiques d'utilisation
+	@echo "$(BLUE)📊 Statistiques d'utilisation :$(NC)"
+	@echo ""
+	@echo "$(YELLOW)💾 Espace disque :$(NC)"
+	@du -sh data/ traefik-data/ $(BACKUP_DIR)/ 2>/dev/null || echo "$(YELLOW)⚠️  Certains dossiers n'existent pas encore$(NC)"
+	@echo ""
+	@echo "$(YELLOW)🐳 Images Docker :$(NC)"
+	@docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep -E "(traefik|dolibarr)" || echo "$(YELLOW)⚠️  Aucune image trouvée$(NC)"
+	@echo ""
+	@echo "$(YELLOW)📈 Utilisation ressources :$(NC)"
+	@docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" 2>/dev/null || echo "$(YELLOW)⚠️  Aucun conteneur en cours$(NC)"
+
+# =================================================================
+# DÉVELOPPEMENT
+# =================================================================
+
+dev-reset: ## 🔄 Reset complet pour développement
+	@echo "$(BLUE)🔄 Reset pour développement...$(NC)"
+	@echo "$(YELLOW)⚠️  ATTENTION: Cette action va supprimer toutes les données !$(NC)"
+	@read -p "Êtes-vous sûr ? (tapez 'yes'): " confirm && [ "$$confirm" = "yes" ] || exit 1
+	@make stop
+	@docker-compose -f $(COMPOSE_FILE) down -v
+	@rm -rf data/ traefik-data/ traefik-logs/
+	@echo "$(GREEN)✅ Reset terminé$(NC)"
+
+monitor: ## 📊 Monitoring en temps réel
+	@echo "$(BLUE)📊 Monitoring en temps réel (Ctrl+C pour quitter)...$(NC)"
+	@watch -n 2 'echo "=== CONTAINERS ===" && docker-compose -f $(COMPOSE_FILE) ps && echo "" && echo "=== STATS ===" && docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"'

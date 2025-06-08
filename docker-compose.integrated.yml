@@ -1,0 +1,225 @@
+# =================================================================
+# TRAEFIK + DOLIBARR - CONFIGURATION INTÉGRÉE SÉCURISÉE
+# =================================================================
+
+services:
+  # =================================================================
+  # TRAEFIK REVERSE PROXY
+  # =================================================================
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: unless-stopped
+    
+    command:
+      # API Configuration
+      - "--api.dashboard=true"
+      - "--api.debug=${TRAEFIK_DEBUG:-false}"
+      
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      
+      # Docker Provider
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.docker.network=traefik-network"
+      
+      # File Provider
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--providers.file.watch=true"
+      
+      # SSL/TLS with Let's Encrypt
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.caserver=${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}"
+      
+      # Global redirect HTTP to HTTPS
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+      
+      # Logging
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-INFO}"
+      - "--accesslog=true"
+      - "--accesslog.filepath=/var/log/traefik/access.log"
+      
+      # Metrics
+      - "--metrics.prometheus=true"
+    
+    ports:
+      - "80:80"
+      - "443:443"
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik-data/letsencrypt:/letsencrypt
+      - ./traefik-config/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./traefik-logs:/var/log/traefik
+    
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`${TRAEFIK_DOMAIN}`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth,security-headers"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_DASHBOARD_CREDENTIALS}"
+    
+    networks:
+      - traefik-network
+    
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+    security_opt:
+      - no-new-privileges:true
+
+  # =================================================================
+  # DOLIBARR ERP/CRM
+  # =================================================================
+  dolibarr:
+    image: dolibarr/dolibarr:latest
+    container_name: dolibarr
+    restart: unless-stopped
+    
+    environment:
+      # Installation & Production
+      DOLI_INSTALL_AUTO: ${DOLI_INSTALL_AUTO:-1}
+      DOLI_INIT_DEMO: ${DOLI_INIT_DEMO:-0}
+      DOLI_PROD: ${DOLI_PROD:-1}
+      DOLI_INSTANCE_UNIQUE_ID: ${DOLI_INSTANCE_UNIQUE_ID}
+      
+      # Database Configuration (PostgreSQL Supabase)
+      DOLI_DB_TYPE: ${DOLI_DB_TYPE:-pgsql}
+      DOLI_DB_HOST: ${DOLI_DB_HOST}
+      DOLI_DB_HOST_PORT: ${DOLI_DB_HOST_PORT:-5432}
+      DOLI_DB_NAME: ${DOLI_DB_NAME}
+      DOLI_DB_USER: ${DOLI_DB_USER}
+      DOLI_DB_PASSWORD: ${DOLI_DB_PASSWORD}
+      
+      # Application Configuration
+      DOLI_URL_ROOT: https://${DOLIBARR_DOMAIN}
+      DOLI_ADMIN_LOGIN: ${DOLI_ADMIN_LOGIN}
+      DOLI_ADMIN_PASSWORD: ${DOLI_ADMIN_PASSWORD}
+      
+      # Company Configuration
+      DOLI_COMPANY_NAME: ${DOLI_COMPANY_NAME}
+      DOLI_COMPANY_COUNTRYCODE: ${DOLI_COMPANY_COUNTRYCODE}
+      DOLI_ENABLE_MODULES: ${DOLI_ENABLE_MODULES}
+      
+      # Cron Configuration
+      DOLI_CRON: ${DOLI_CRON:-1}
+      DOLI_CRON_KEY: ${DOLI_CRON_KEY}
+      DOLI_CRON_USER: ${DOLI_CRON_USER}
+      
+      # System Configuration
+      WWW_USER_ID: ${WWW_USER_ID:-1000}
+      WWW_GROUP_ID: ${WWW_GROUP_ID:-1000}
+      
+      # PHP Configuration
+      PHP_INI_DATE_TIMEZONE: ${PHP_INI_DATE_TIMEZONE:-Europe/Paris}
+      PHP_INI_MEMORY_LIMIT: ${PHP_INI_MEMORY_LIMIT:-512M}
+      PHP_INI_UPLOAD_MAX_FILESIZE: ${PHP_INI_UPLOAD_MAX_FILESIZE:-50M}
+      PHP_INI_POST_MAX_SIZE: ${PHP_INI_POST_MAX_SIZE:-100M}
+    
+    volumes:
+      - ${DOLIBARR_DOCUMENTS_PATH:-./data/dolibarr_documents}:/var/www/documents
+      - ${DOLIBARR_CUSTOM_PATH:-./data/dolibarr_custom}:/var/www/html/custom
+    
+    labels:
+      # Enable Traefik
+      - "traefik.enable=true"
+      
+      # Main router
+      - "traefik.http.routers.dolibarr.rule=Host(`${DOLIBARR_DOMAIN}`)"
+      - "traefik.http.routers.dolibarr.entrypoints=websecure"
+      - "traefik.http.routers.dolibarr.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dolibarr.tls.options=modern@file"
+      
+      # Service configuration
+      - "traefik.http.services.dolibarr.loadbalancer.server.port=80"
+      
+      # Middlewares
+      - "traefik.http.routers.dolibarr.middlewares=dolibarr-middlewares"
+      - "traefik.http.middlewares.dolibarr-middlewares.chain.middlewares=security-headers@file,gzip-compression@file,global-rate-limit@file"
+      
+      # Optional: IP whitelist for admin access
+      # - "traefik.http.middlewares.dolibarr-admin.ipwhitelist.sourcerange=YOUR_IP/32"
+    
+    networks:
+      - traefik-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    security_opt:
+      - no-new-privileges:true
+
+  # =================================================================
+  # MONITORING (OPTIONNEL)
+  # =================================================================
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400  # 24h
+      - WATCHTOWER_INCLUDE_STOPPED=true
+      - WATCHTOWER_REVIVE_STOPPED=false
+    command: --schedule "0 2 * * *"  # 2h du matin tous les jours
+    networks:
+      - traefik-network
+
+  # =================================================================
+  # FAIL2BAN (OPTIONNEL - PROTECTION AVANCÉE)
+  # =================================================================
+  fail2ban:
+    image: crazymax/fail2ban:latest
+    container_name: fail2ban
+    restart: unless-stopped
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ./fail2ban-data:/data
+      - ./traefik-logs:/var/log/traefik:ro
+      - /var/log:/var/log:ro
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+      - F2B_DB_PURGE_AGE=30d
+      - F2B_LOG_TARGET=STDOUT
+      - F2B_LOG_LEVEL=INFO
+    profiles:
+      - security  # Activé uniquement avec: docker-compose --profile security up
+
+# =================================================================
+# NETWORKS
+# =================================================================
+networks:
+  traefik-network:
+    external: true
+
+# =================================================================
+# VOLUMES
+# =================================================================
+volumes:
+  traefik-certificates:
+    driver: local
+  dolibarr-documents:
+    driver: local
+  dolibarr-custom:
+    driver: local

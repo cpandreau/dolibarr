@@ -1,0 +1,190 @@
+# =================================================================
+# TRAEFIK DYNAMIC CONFIGURATION
+# =================================================================
+# Configuration avancée pour middlewares et sécurité
+
+http:
+  # =================================================================
+  # MIDDLEWARES DE SÉCURITÉ
+  # =================================================================
+  middlewares:
+    # Headers de sécurité complets
+    security-headers:
+      headers:
+        # Sécurité XSS et clickjacking
+        frameDeny: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        
+        # HSTS (HTTP Strict Transport Security)
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        
+        # CSP (Content Security Policy)
+        contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none';"
+        
+        # Headers personnalisés
+        customResponseHeaders:
+          X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive,notranslate,noimageindex"
+          X-Frame-Options: "DENY"
+          X-Content-Type-Options: "nosniff"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+          Permissions-Policy: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), speaker=()"
+        
+        # Headers pour reverse proxy
+        customRequestHeaders:
+          X-Forwarded-Proto: "https"
+          X-Real-IP: ""
+          X-Forwarded-For: ""
+
+    # Rate limiting global
+    global-rate-limit:
+      rateLimit:
+        average: 100
+        period: "1m"
+        burst: 50
+
+    # Rate limiting strict pour l'administration
+    admin-rate-limit:
+      rateLimit:
+        average: 20
+        period: "1m"
+        burst: 10
+
+    # Authentification pour services sensibles
+    admin-auth:
+      basicAuth:
+        users:
+          - "admin:$2y$10$X7fzJdFkhzJEkR1WvJfD6.ZK.vJg7tTzKdJT3GzN6FJhYn5B3.K9K"
+
+    # Redirection HTTPS
+    https-redirect:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    # Compression GZIP
+    gzip-compression:
+      compress: {}
+
+    # Headers CORS pour API
+    cors-headers:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+        accessControlAllowOriginList:
+          - "https://pandreau.fr"
+          - "https://www.pandreau.fr"
+        accessControlAllowHeaders:
+          - "Content-Type"
+          - "Authorization"
+          - "X-Requested-With"
+        accessControlExposeHeaders:
+          - "Content-Length"
+          - "Content-Range"
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 86400
+
+    # Limitation IP (exemple pour protection brute force)
+    ip-whitelist:
+      ipWhiteList:
+        sourceRange:
+          - "127.0.0.1/32"
+          - "10.0.0.0/8"
+          - "192.168.0.0/16"
+          - "172.16.0.0/12"
+          # Ajoutez vos IPs de confiance ici
+
+    # Circuit breaker
+    circuit-breaker:
+      circuitBreaker:
+        expression: "NetworkErrorRatio() > 0.3 || ResponseCodeRatio(500, 600, 0, 600) > 0.3"
+        checkPeriod: "10s"
+        fallbackDuration: "30s"
+        recoveryDuration: "60s"
+
+    # Retry automatique
+    retry-policy:
+      retry:
+        attempts: 3
+        initialInterval: "1s"
+
+  # =================================================================
+  # CHAÎNES DE MIDDLEWARES
+  # =================================================================
+  middlewareChains:
+    # Chaîne pour applications web standard
+    web-secure:
+      - https-redirect
+      - security-headers
+      - gzip-compression
+      - global-rate-limit
+      - circuit-breaker
+
+    # Chaîne pour administration
+    admin-secure:
+      - https-redirect
+      - admin-auth
+      - security-headers
+      - admin-rate-limit
+      - ip-whitelist
+
+    # Chaîne pour API
+    api-secure:
+      - https-redirect
+      - cors-headers
+      - security-headers
+      - global-rate-limit
+      - retry-policy
+
+# =================================================================
+# CONFIGURATION TLS
+# =================================================================
+tls:
+  options:
+    # Configuration TLS moderne et sécurisée
+    modern:
+      minVersion: "VersionTLS12"
+      maxVersion: "VersionTLS13"
+      cipherSuites:
+        - "TLS_AES_256_GCM_SHA384"
+        - "TLS_CHACHA20_POLY1305_SHA256"
+        - "TLS_AES_128_GCM_SHA256"
+        - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+        - "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+        - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+      curvePreferences:
+        - "CurveP521"
+        - "CurveP384"
+        - "CurveP256"
+      sniStrict: true
+
+    # Configuration TLS compatible (si problèmes avec "modern")
+    intermediate:
+      minVersion: "VersionTLS12"
+      cipherSuites:
+        - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+        - "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
+        - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+        - "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+        - "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
+        - "TLS_RSA_WITH_AES_256_GCM_SHA384"
+        - "TLS_RSA_WITH_AES_128_GCM_SHA256"
+        - "TLS_RSA_WITH_AES_256_CBC_SHA"
+        - "TLS_RSA_WITH_AES_128_CBC_SHA"
+
+  # Certificats par défaut (Let's Encrypt gérera automatiquement)
+  stores:
+    default:
+      defaultGeneratedCert:
+        resolver: letsencrypt
+        domain:
+          main: "pandreau.fr"
+          sans:
+            - "*.pandreau.fr"

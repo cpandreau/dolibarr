@@ -1,0 +1,175 @@
+# =================================================================
+# LOKI CONFIGURATION - AGGREGATION DE LOGS
+# =================================================================
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+# =================================================================
+# SCHEMA CONFIGURATION
+# =================================================================
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+# =================================================================
+# STORAGE CONFIGURATION
+# =================================================================
+storage_config:
+  boltdb_shipper:
+    active_index_directory: /loki/boltdb-shipper-active
+    cache_location: /loki/boltdb-shipper-cache
+    cache_ttl: 24h
+    shared_store: filesystem
+  filesystem:
+    directory: /loki/chunks
+
+# =================================================================
+# COMPACTOR
+# =================================================================
+compactor:
+  working_directory: /loki/boltdb-shipper-compactor
+  shared_store: filesystem
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+
+# =================================================================
+# LIMITS CONFIGURATION
+# =================================================================
+limits_config:
+  # Ingestion limits
+  ingestion_rate_mb: 4
+  ingestion_burst_size_mb: 6
+  per_stream_rate_limit: 3MB
+  per_stream_rate_limit_burst: 15MB
+  
+  # Query limits
+  max_query_parallelism: 32
+  max_query_series: 500
+  max_query_lookback: 0s
+  max_query_length: 721h
+  
+  # Retention per tenant (global)
+  retention_period: 7d
+  
+  # Split queries by day
+  split_queries_by_interval: 24h
+  
+  # Maximum number of chunks per query
+  max_chunks_per_query: 2000000
+  
+  # Maximum number of bytes per query
+  max_query_size: 16MB
+  
+  # Reject queries that are too old
+  reject_old_samples: true
+  reject_old_samples_max_age: 24h
+  
+  # Creation grace period
+  creation_grace_period: 10m
+
+# =================================================================
+# CHUNK STORE CONFIGURATION
+# =================================================================
+chunk_store_config:
+  max_look_back_period: 0s
+  chunk_cache_config:
+    enable_fifocache: true
+    fifocache:
+      max_size_items: 1024
+      validity: 24h
+
+# =================================================================
+# TABLE MANAGER
+# =================================================================
+table_manager:
+  retention_deletes_enabled: true
+  retention_period: 7d
+  chunk_tables_provisioning:
+    inactive_read_throughput: 0
+    inactive_write_throughput: 0
+    provisioned_read_throughput: 0
+    provisioned_write_throughput: 0
+  index_tables_provisioning:
+    inactive_read_throughput: 0
+    inactive_write_throughput: 0
+    provisioned_read_throughput: 0
+    provisioned_write_throughput: 0
+
+# =================================================================
+# QUERY RANGE
+# =================================================================
+query_range:
+  # Make queries more cache-able by aligning them with their step intervals
+  align_queries_with_step: true
+  max_retries: 5
+  split_queries_by_interval: 15m
+  parallelise_shardable_queries: true
+  cache_results: true
+  
+  results_cache:
+    cache:
+      enable_fifocache: true
+      fifocache:
+        max_size_items: 1024
+        validity: 24h
+
+# =================================================================
+# FRONTEND
+# =================================================================
+frontend:
+  log_queries_longer_than: 5s
+  downstream_url: http://127.0.0.1:3100
+  compress_responses: true
+
+# =================================================================
+# QUERY SCHEDULER
+# =================================================================
+query_scheduler:
+  max_outstanding_requests_per_tenant: 256
+
+# =================================================================
+# RULER (ALERTING)
+# =================================================================
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /tmp/loki-rules
+  alertmanager_url: http://alertmanager:9093
+  ring:
+    kvstore:
+      store: inmemory
+  enable_api: true
+  enable_alertmanager_v2: true
+
+# =================================================================
+# ANALYTICS
+# =================================================================
+analytics:
+  reporting_enabled: false
