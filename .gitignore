@@ -7,6 +7,7 @@
 .env.local
 .env.production
 *.env
+.env.*
 
 # Données persistantes
 data/
